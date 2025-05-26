@@ -63,7 +63,7 @@ EnvironmentFile=/etc/minio/minio.conf
 Restart=always
 LimitNOFILE=65536
 ExecStart=/usr/local/bin/minio server $MINIO_VOLUMES $MINIO_OPTS
-ExecStartPost=/bin/bash -c 'sleep 5 && HOME=/tmp /usr/local/bin/mc alias set local http://localhost:9000 minioadmin minioadmin && HOME=/tmp /usr/local/bin/mc admin heal -r local'
+#ExecStartPost=/bin/bash -c 'sleep 5 && HOME=/tmp /usr/local/bin/mc alias set local http://localhost:9000 minioadmin minioadmin && HOME=/tmp /usr/local/bin/mc admin heal -r local'
 
 [Install]
 WantedBy=multi-user.target
@@ -111,4 +111,135 @@ mc admin heal info local
 
 ---
 
-برای اطمینان بیشتر می‌توانید لاگ‌های مربوط به heal را به `/var/log/minio-heal.log` هدایت کنید یا آن را در یک cron job جداگانه زمان‌بندی کنید.
+
+## 7. کپی کردن کلیدهای عمومی هر نود اصلی بر روی نودهای دیگر
+
+```bash
+cat ~/.ssh/id_rsa.pub
+```
+---
+سپس شناسه را در مسیر root/.ssh/authorized_keys/ روی هر 3 نود قرار میدهیم
+
+
+---
+
+## 8.سپس تنظیمات ldaps را در مسیر زیر پیاده میکنیم:
+
+```bash
+vim /etc/minio/config/iam/ldap.json
+```
+و سپس :
+
+```bash
+{
+  "identity_ldap": {
+    "server_addr": "pridmzdc-srv.CSDI.PriDMZ:636",
+    "username_format": "CN=%s,CN=Users,DC=CSDI,DC=PriDMZ",
+    "user_dn_search_base_dn": "DC=CSDI,DC=PriDMZ",
+    "user_dn_search_filter": "(sAMAccountName=%s)",
+    "bind_dn": "CN=MinioLDAPUser,OU=Minio,OU=Service Users,DC=CSDI,DC=PriDMZ",
+    "bind_password": "Mos@1404!2025Sph",
+    "tls_skip_verify": true,
+    "server_insecure": false,
+    "sts_expiry": "1h",
+    "group_search_base_dn": "DC=CSDI,DC=PriDMZ",
+    "group_search_filter": "(&(objectClass=group)(member=%d))"
+  }
+}
+```
+---
+روی هر 4 نود پیاده سازی میکنیم.
+
+---
+
+## 9. ساخت فایل updateminio.sh برای اجرای فایل های اجرایی از یک نود روی نود های دیگر
+```bash
+#!/bin/bash
+/usr/bin/rsync -avz /etc/minio/ -e ssh root@172.16.5.226:/etc/minio
+/usr/bin/rsync -avz /etc/ssl/certs/*.* -e ssh root@172.16.5.226:/etc/ssl/certs/
+/usr/bin/rsync -avz /etc/systemd/system/minio.service -e ssh root@172.16.5.226:/etc/systemd/system/
+
+/usr/bin/rsync -avz /etc/minio/ -e ssh root@172.16.5.227:/etc/minio
+/usr/bin/rsync -avz /etc/ssl/certs/*.* -e ssh root@172.16.5.227:/etc/ssl/certs/
+/usr/bin/rsync -avz /etc/systemd/system/minio.service -e ssh root@172.16.5.227:/etc/systemd/system/
+
+/usr/bin/rsync -avz /etc/ssl/certs/*.* -e ssh root@172.16.5.228:/etc/ssl/certs/
+/usr/bin/rsync -avz /etc/minio/ -e ssh root@172.16.5.228:/etc/minio
+/usr/bin/rsync -avz /etc/systemd/system/minio.service -e ssh root@172.16.5.228:/etc/systemd/system/
+
+/usr/bin/systemctl  daemon-reload
+/usr/bin/systemctl -H root@172.16.5.227 daemon-reload
+/usr/bin/systemctl -H root@172.16.5.228 daemon-reload
+/usr/bin/systemctl -H root@172.16.5.226 daemon-reload
+
+/usr/bin/systemctl  restart minio
+/usr/bin/systemctl -H root@172.16.5.227 restart minio
+/usr/bin/systemctl -H root@172.16.5.228 restart minio
+/usr/bin/systemctl -H root@172.16.5.226 restart minio
+
+
+/usr/bin/sleep 3
+/usr/local/bin/mc alias set local http://localhost:9000 consoleAdmin minIoAdmInCSDI
+ssh root@172.16.5.226 "/usr/local/bin/mc alias set local http://localhost:9000 consoleAdmin minIoAdmInCSDI"
+ssh root@172.16.5.227 "/usr/local/bin/mc alias set local http://localhost:9000 consoleAdmin minIoAdmInCSDI"
+ssh root@172.16.5.228 "/usr/local/bin/mc alias set local http://localhost:9000 consoleAdmin minIoAdmInCSDI"
+
+/usr/bin/systemctl  status minio
+
+```
+
+
+---
+
+سپس به فایل updateminio.sh دسترسی های مورد نظر را داده و آنرا اجرا میکنیم:
+```bash
+chmod +x updateminio.sh
+./updateminio.sh
+```
+---
+
+
+## 10. ست کردن Alias 
+```bash
+mc alias set local http://localhost:9000 consoleAdmin minIoAdmInCSDI
+```
+---
+برای مشاهده لیست alias ها
+
+```bash
+mc alias list
+``` 
+---
+---
+## 11.دیدن لیست user policy ها 
+```bash
+mc admin policy list local
+``` 
+---
+شبیه به چنین چیزی رو نمایش میدهد: 
+```bash
+consoleAdmin
+diagnostics
+readonly
+readwrite
+writeonly
+```
+
+---
+
+## 12. دادن Access Group به یوزر policy ها
+---
+Access group to consoleAdmin:
+```bash
+mc idp ldap policy attach local consoleAdmin --group "CN=MinioConsoleAdmin,OU=Minio,OU=Service Users,DC=CSDI,DC=PriDMZ"
+```
+Access group ReadWrite:
+```bash
+mc idp ldap policy attach local readwrite --group "CN=MinioReadWrite,OU=Minio,OU=Service Users,DC=CSDI,DC=PriDMZ"
+```
+Access group ReadOnly:
+```bash
+mc idp ldap policy attach local readonly --group "CN=MinioReadOnly,OU=Minio,OU=Service Users,DC=CSDI,DC=PriDMZ"
+```
+
+---
